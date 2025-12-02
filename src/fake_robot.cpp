@@ -320,6 +320,9 @@ private:
     elapsed_time_ += dt_;
   }
   
+  // =========================================================
+  // MODIFIED FUNCTION FOR RELATIVE COORDINATES
+  // =========================================================
   void publish_observed_landmarks() {
     if (landmarks_.empty()) {
       return;
@@ -330,13 +333,12 @@ private:
     int observed_count = 0;
     
     // Collect observed landmarks
-    std::vector<std::pair<Landmark, double>> observed;  // landmark + noise
+    std::vector<std::pair<Landmark, double>> observed;
     for (const auto& landmark : landmarks_) {
       double dx = landmark.x - robot_x_;
       double dy = landmark.y - robot_y_;
       double distance = std::sqrt(dx * dx + dy * dy);
       
-      // If landmark is within observation radius
       if (distance <= observation_radius_) {
         observed.push_back({landmark, distance});
         observed_count++;
@@ -346,11 +348,12 @@ private:
     // Create PointCloud2 message
     auto pc = std::make_unique<sensor_msgs::msg::PointCloud2>();
     pc->header.stamp = now;
-    pc->header.frame_id = "map";
+    // CHANGE 1: Use local frame instead of map
+    pc->header.frame_id = "robot"; 
     pc->height = 1;
     pc->width = observed.size();
     
-    // Define fields: x, y, z (fixed), id
+    // Define fields (same as before)
     pc->fields.resize(4);
     pc->fields[0].name = "x";
     pc->fields[0].offset = 0;
@@ -372,27 +375,38 @@ private:
     pc->fields[3].datatype = sensor_msgs::msg::PointField::INT32;
     pc->fields[3].count = 1;
     
-    pc->point_step = 16;  // 4 bytes (x) + 4 bytes (y) + 4 bytes (z) + 4 bytes (id)
+    pc->point_step = 16;
     pc->row_step = pc->point_step * pc->width;
     pc->data.resize(pc->row_step);
     pc->is_dense = true;
     
-    // Fill point cloud data with noise
+    // Fill point cloud data with RELATIVE coordinates
     for (size_t i = 0; i < observed.size(); ++i) {
+      // CHANGE 2: Calculate Global Delta
+      double dx = observed[i].first.x - robot_x_;
+      double dy = observed[i].first.y - robot_y_;
+      
+      // CHANGE 3: Rotate into Robot Frame (Ground Truth)
+      // Local X = Forward, Local Y = Left
+      double rel_x =  dx * std::cos(robot_theta_gt_) + dy * std::sin(robot_theta_gt_);
+      double rel_y = -dx * std::sin(robot_theta_gt_) + dy * std::cos(robot_theta_gt_);
+
+      // CHANGE 4: Add noise to relative values
       double noise_x = noise_dist_(rng_) * std_dev;
       double noise_y = noise_dist_(rng_) * std_dev;
       
       float* ptr = (float*)&pc->data[i * pc->point_step];
-      ptr[0] = observed[i].first.x + noise_x;  // x with noise
-      ptr[1] = observed[i].first.y + noise_y;  // y with noise
-      ptr[2] = 0.0;                             // z (fixed)
+      ptr[0] = rel_x + noise_x;  // relative x with noise
+      ptr[1] = rel_y + noise_y;  // relative y with noise
+      ptr[2] = 0.0;              // z
       
       int32_t* id_ptr = (int32_t*)&pc->data[i * pc->point_step + 12];
-      *id_ptr = observed[i].first.id;  // id
+      *id_ptr = observed[i].first.id;
     }
     
     observed_landmarks_publisher_->publish(std::move(pc));
   }
+  // =========================================================
 
   void publish_robot_noisy_pose() {
     // Compute noisy pose by adding incremental noise to previous noisy pose
@@ -489,4 +503,3 @@ int main(int argc, char *argv[])
   rclcpp::shutdown();
   return 0;
 }
-
